@@ -29,6 +29,49 @@ df[cols_datas] = df[cols_datas].apply(pd.to_datetime, errors='coerce')
 
 df = df[df['nome_hub'].notna()]
 
+
+target = df['dias_dif_promessa_entrega'].dropna()
+
+bins = np.arange(target.min(), target.max() + 2) - 0.5
+
+counts, _ = np.histogram(target, bins=bins)
+
+bin_centers = (bins[:-1] + bins[1:]) / 2
+
+pareto = np.cumsum(counts) / np.sum(counts) * 100
+
+fig, ax1 = plt.subplots(figsize=(10, 6))
+
+ax1.bar(bin_centers, counts, width=1, edgecolor='black', alpha=0.7)
+
+ax1.set_xlabel('Dias de Diferença da Entrega')
+ax1.set_ylabel('Frequência')
+
+ax1.set_xticks(np.arange(target.min(), target.max() + 1, 1))
+
+ax2 = ax1.twinx()
+ax2.plot(bin_centers, pareto, color='black', marker='o', linewidth=2)
+ax2.set_ylabel('Percentual Acumulado (%)')
+ax2.set_ylim(0, 110)
+
+for x, y in zip(bin_centers, pareto):
+    ax2.text(
+        x,
+        y + 1.5,
+        f'{y:.1f}%',
+        ha='center',
+        fontsize=10
+    )
+
+ax1.spines['top'].set_visible(False)
+ax1.spines['right'].set_visible(False)
+ax2.spines['top'].set_visible(False)
+
+plt.tight_layout()
+plt.show()
+
+# Aplicando regra de negócio: máximo 8 dias
+df['dias_dif_promessa_entrega'] = df['dias_dif_promessa_entrega'].clip(upper=8)
 #%%
 # =========================================================
 # 3. VARIÁVEIS
@@ -128,48 +171,6 @@ modelos_class = {
 }
 
 
-# Dados estruturados
-dados = [
-    ["LinearRegression", "Regressão", "Modelo linear simples que assume relação direta entre variáveis."],
-    ["RandomForestRegressor", "Regressão", "Ensemble de árvores que captura padrões não lineares e reduz overfitting."],
-    ["GradientBoostingRegressor", "Regressão", "Modelo sequencial que corrige erros anteriores, alta precisão."],
-    ["SVR", "Regressão", "Regressão baseada em margens, sensível à escala dos dados."],
-    ["KNNRegressor", "Regressão", "    , simples porém limitado."],
-    
-    ["LogisticRegression", "Classificação", "Modelo linear para classificação baseado em probabilidade."],
-    ["RandomForestClassifier", "Classificação", "Ensemble robusto de árvores, ótimo para dados tabulares."],
-    ["GradientBoostingClassifier", "Classificação", "Modelo sequencial com alta capacidade preditiva."],
-    ["SVC", "Classificação", "Classificador baseado em hiperplanos, eficiente em alta dimensionalidade."],
-    ["KNNClassifier", "Classificação", "Classificação baseada na maioria dos vizinhos mais próximos."]
-]
-
-df_modelos = pd.DataFrame(dados, columns=["Modelo", "Tipo", "Descrição"])
-df_modelos = df_modelos.sort_values(by="Modelo")
-
-fig, ax = plt.subplots(figsize=(13, 6))
-ax.axis('off')
-
-tabela = ax.table(
-    cellText=df_modelos.values,
-    colLabels=df_modelos.columns,
-    loc='center'
-)
-
-tabela.auto_set_font_size(False)
-tabela.set_fontsize(11)
-tabela.auto_set_column_width(col=list(range(3)))
-
-for (row, col), cell in tabela.get_celld().items():
-    cell.get_text().set_ha('left')  # horizontal alignment
-    cell.get_text().set_va('center')  # vertical alignment
-
-for i in range(len(df_modelos) + 1):
-    for j in range(3):
-        tabela[(i, j)].set_height(0.08)
-
-plt.title("Modelos Utilizados na Análise", fontsize=14)
-plt.tight_layout()
-plt.show()
 
 #%%
 # =========================================================
@@ -187,11 +188,20 @@ def metricas_negocio(y_true, y_pred):
 
 #%%
 # =========================================================
-# 9. AVALIAÇÃO
+# 9. AVALIAÇÃO (REGRESSÃO + CLASSIFICAÇÃO + MÉTRICAS AVANÇADAS)
 # =========================================================
+from sklearn.metrics import (
+    accuracy_score, f1_score,
+    confusion_matrix, 
+    roc_auc_score
+)
+from sklearn.preprocessing import label_binarize
+
 resultados = []
 
-# -------- REGRESSÃO --------
+# =========================
+# REGRESSÃO
+# =========================
 for nome, modelo in modelos_reg.items():
     modelo.fit(X_train_te, y_train)
     y_pred = modelo.predict(X_test_te)
@@ -203,44 +213,95 @@ for nome, modelo in modelos_reg.items():
     acc_exato, acc_1, acc_2 = metricas_negocio(y_test.values, y_pred)
 
     resultados.append([
-        nome + "_Reg", mae, rmse, r2,
-        acc_exato * 100, acc_1 * 100, acc_2 * 100
+        nome + "_Reg",
+        mae,
+        rmse,
+        r2,
+        np.nan,   # accuracy
+        np.nan,   # f1
+        np.nan,   # roc_auc
+        acc_exato * 100,
+        acc_1 * 100,
+        acc_2 * 100
     ])
 
 
-# -------- CLASSIFICAÇÃO --------
+# =========================
+# CLASSIFICAÇÃO
+# =========================
 y_train_c = y_train.astype(int)
 y_test_c = y_test.astype(int)
 
 for nome, modelo in modelos_class.items():
-    modelo.fit(X_train_te, y_train_c)
-    y_pred = modelo.predict(X_test_te)
+    try:
+        modelo.fit(X_train_te, y_train_c)
+        y_pred = modelo.predict(X_test_te)
 
-    mae = mean_absolute_error(y_test_c, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_test_c, y_pred))
+        mae = mean_absolute_error(y_test_c, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test_c, y_pred))
 
-    acc_exato, acc_1, acc_2 = metricas_negocio(y_test_c.values, y_pred)
+        acc = accuracy_score(y_test_c, y_pred)
+        f1 = f1_score(y_test_c, y_pred, average='weighted')
 
-    resultados.append([
-        nome + "_Class", mae, rmse, np.nan,
-        acc_exato * 100, acc_1 * 100, acc_2 * 100
-    ])
+        acc_exato, acc_1, acc_2 = metricas_negocio(y_test_c.values, y_pred)
 
-#%%
-# =========================================================
-# 10. RESULTADO FINAL
-# =========================================================
+        # ROC-AUC seguro
+        roc_auc = np.nan
+        if hasattr(modelo, "predict_proba"):
+            try:
+                y_score = modelo.predict_proba(X_test_te)
+                classes = np.unique(y_test_c)
+                y_test_bin = label_binarize(y_test_c, classes=classes)
+
+                roc_auc = roc_auc_score(
+                    y_test_bin,
+                    y_score,
+                    multi_class='ovr'
+                )
+            except:
+                pass
+
+        resultados.append([
+            nome + "_Class",
+            mae,
+            rmse,
+            np.nan,
+            acc * 100,
+            f1 * 100,
+            roc_auc,
+            acc_exato * 100,
+            acc_1 * 100,
+            acc_2 * 100
+        ])
+
+    except Exception as e:
+        print(f"Erro no modelo {nome}: {e}")
+
+# =========================
+# RESULTADO FINAL
+# =========================
+
 df_resultado = pd.DataFrame(resultados, columns=[
-    'Modelo', 'MAE', 'RMSE', 'R2',
-    'Acerto Exato (%)', 'Acerto ±1 dia (%)', 'Acerto ±2 dias (%)'
+    'Modelo',
+    'MAE',
+    'RMSE',
+    'R2',
+    'Accuracy (%)',
+    'F1-score (%)',
+    'ROC-AUC',
+    'Acerto Exato (%)',
+    'Acerto ±1 dia (%)',
+    'Acerto ±2 dias (%)'
 ])
 
 df_resultado = df_resultado.sort_values('MAE')
 
-print("\nRESULTADO FINAL")
 print(df_resultado)
 
-
+#%%
+# =========================================================
+# 10. PLOT MÉTRICAS
+# =========================================================
 
 df_plot = df_resultado.copy()
 df_plot = df_plot.sort_values(by='Acerto Exato (%)', ascending=False).reset_index(drop=True)
@@ -251,11 +312,22 @@ df_plot['MAE'] = df_plot['MAE'].round(3)
 df_plot['RMSE'] = df_plot['RMSE'].round(3)
 df_plot['R2'] = df_plot['R2'].round(3)
 
+df_plot['Accuracy (%)'] = df_plot['Accuracy (%)'].round(2)
+df_plot['F1-score (%)'] = df_plot['F1-score (%)'].round(2)
+df_plot['ROC-AUC'] = df_plot['ROC-AUC'].round(3)
+
 df_plot['Acerto Exato (%)'] = df_plot['Acerto Exato (%)'].round(2)
 df_plot['Acerto ±1 dia (%)'] = df_plot['Acerto ±1 dia (%)'].round(2)
 df_plot['Acerto ±2 dias (%)'] = df_plot['Acerto ±2 dias (%)'].round(2)
 
-fig, ax = plt.subplots(figsize=(13, 6))
+df_plot = df_plot[[
+    'Rank', 'Modelo',
+    'MAE', 'RMSE', 'R2',
+    'Accuracy (%)', 'F1-score (%)', 'ROC-AUC',
+    'Acerto Exato (%)', 'Acerto ±1 dia (%)', 'Acerto ±2 dias (%)'
+]]
+
+fig, ax = plt.subplots(figsize=(15, 6))
 ax.axis('off')
 
 tabela = ax.table(
@@ -265,7 +337,7 @@ tabela = ax.table(
 )
 
 tabela.auto_set_font_size(False)
-tabela.set_fontsize(12)
+tabela.set_fontsize(11)
 tabela.auto_set_column_width(col=list(range(len(df_plot.columns))))
 
 for (row, col), cell in tabela.get_celld().items():
@@ -274,9 +346,13 @@ for (row, col), cell in tabela.get_celld().items():
 
 for i in range(len(df_plot) + 1):
     for j in range(len(df_plot.columns)):
-        tabela[(i, j)].set_height(0.08)
+        tabela[(i, j)].set_height(0.075)
 
-plt.title("Ranking de Modelos - Acerto Exato (%)", fontsize=14)
+for j in range(len(df_plot.columns)):
+    tabela[(0, j)].set_text_props(weight='bold')
+
+plt.title("Ranking de Modelos - Métricas Completas", fontsize=14)
+
 plt.tight_layout()
 plt.show()
 
@@ -394,13 +470,13 @@ ax.set_ylabel("Features")
 
 plt.tight_layout()
 plt.show()
-
+#%%
 # =========================================================
 # 12. REDUZIR BASE
 # =========================================================
 X_train_sel = X_train_te[features_selecionadas]
 X_test_sel = X_test_te[features_selecionadas]
-
+#%%
 # =========================================================
 # 13. GRID SEARCH + CROSS VALIDATION (RF CLASS)
 # =========================================================
@@ -415,7 +491,8 @@ param_grid = {
 
 rf_base = RandomForestClassifier(
     random_state=42,
-    n_jobs=-1
+    n_jobs=-1,
+    verbose=2
 )
 
 grid_search = GridSearchCV(
@@ -427,28 +504,61 @@ grid_search = GridSearchCV(
     verbose=2
 )
 
-# Treinar com features selecionadas
 grid_search.fit(X_train_sel, y_train_c)
 
-# Melhor modelo encontrado
 best_model = grid_search.best_estimator_
 
 print("\nMelhores hiperparâmetros:")
 print(grid_search.best_params_)
-
+#%%
 # =========================================================
 # 14. PREDIÇÃO COM MELHOR MODELO
 # =========================================================
 y_pred_sel = best_model.predict(X_test_sel)
-
+#%%
 # =========================================================
-# 15. MÉTRICAS
+# 15. MÉTRICAS 
 # =========================================================
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import (
+    mean_absolute_error, mean_squared_error,
+    accuracy_score, f1_score, roc_auc_score
+)
+from sklearn.preprocessing import label_binarize
 
+# -------------------------
+# ERRO
+# -------------------------
 mae = mean_absolute_error(y_test_c, y_pred_sel)
 rmse = np.sqrt(mean_squared_error(y_test_c, y_pred_sel))
 
+# -------------------------
+# CLASSIFICAÇÃO
+# -------------------------
+acc = accuracy_score(y_test_c, y_pred_sel)
+f1 = f1_score(y_test_c, y_pred_sel, average='weighted')
+
+# ROC-AUC (multiclasse)
+try:
+    if hasattr(best_model, "predict_proba"):
+        y_score = best_model.predict_proba(X_test_sel)
+
+        classes = np.unique(y_test_c)
+        y_test_bin = label_binarize(y_test_c, classes=classes)
+
+        roc_auc = roc_auc_score(
+            y_test_bin,
+            y_score,
+            multi_class='ovr'
+        )
+    else:
+        roc_auc = np.nan
+except:
+    roc_auc = np.nan
+
+
+# -------------------------
+# MÉTRICAS DE NEGÓCIO
+# -------------------------
 def metricas_negocio(y_true, y_pred):
     acc_exato = np.mean(y_pred == y_true)
     acc_1 = np.mean(np.abs(y_pred - y_true) <= 1)
@@ -457,13 +567,19 @@ def metricas_negocio(y_true, y_pred):
 
 acc_exato, acc_1, acc_2 = metricas_negocio(y_test_c, y_pred_sel)
 
+# -------------------------
+# PRINT FINAL
+# -------------------------
 print("\nRESULTADO FINAL (RF + GRID SEARCH + FEATURE SELECTION)")
 print(f"MAE: {mae:.4f}")
 print(f"RMSE: {rmse:.4f}")
+print(f"Accuracy: {acc*100:.2f}%")
+print(f"F1-score: {f1*100:.2f}%")
+print(f"ROC-AUC: {roc_auc:.4f}")
 print(f"Acerto exato: {acc_exato*100:.2f}%")
 print(f"Acerto ±1 dia: {acc_1*100:.2f}%")
 print(f"Acerto ±2 dias: {acc_2*100:.2f}%")
-
+#%%
 # =========================================================
 # 16. COMPARAÇÃO (ANTES vs DEPOIS)
 # =========================================================
@@ -472,10 +588,22 @@ print(f"Acerto ±2 dias: {acc_2*100:.2f}%")
 rf_before = df_resultado[df_resultado['Modelo'] == 'RandomForest_Class']
 
 comparacao = pd.DataFrame({
-    'Métrica': ['MAE', 'RMSE', 'Acerto Exato', '±1 dia', '±2 dias'],
+    'Métrica': [
+        'MAE',
+        'RMSE',
+        'Accuracy (%)',
+        'F1-score (%)',
+        'ROC-AUC',
+        'Acerto Exato (%)',
+        '±1 dia (%)',
+        '±2 dias (%)'
+    ],
     'Antes': [
         rf_before['MAE'].values[0],
         rf_before['RMSE'].values[0],
+        rf_before['Accuracy (%)'].values[0],
+        rf_before['F1-score (%)'].values[0],
+        rf_before['ROC-AUC'].values[0],
         rf_before['Acerto Exato (%)'].values[0],
         rf_before['Acerto ±1 dia (%)'].values[0],
         rf_before['Acerto ±2 dias (%)'].values[0]
@@ -483,6 +611,9 @@ comparacao = pd.DataFrame({
     'Depois': [
         mae,
         rmse,
+        acc * 100,
+        f1 * 100,
+        roc_auc,
         acc_exato * 100,
         acc_1 * 100,
         acc_2 * 100
@@ -491,7 +622,7 @@ comparacao = pd.DataFrame({
 
 print("\nCOMPARAÇÃO REAL (ANTES vs DEPOIS)")
 print(comparacao)
-
+#%%
 # =========================================================
 # 17. IMPORTÂNCIA FINAL (MODELO OTIMIZADO)
 # =========================================================
@@ -514,9 +645,7 @@ feat_imp_final = pd.DataFrame({
 print("\nTop 15 features finais:")
 print(feat_imp_final.head(15))
 
-# =========================================================
-# 18. PLOT FINAL
-# =========================================================
+
 top_n = 15
 top_features = feat_imp_final.head(top_n)
 
@@ -530,7 +659,7 @@ ax.invert_yaxis()
 x_max = top_features['importance'].max()
 for i, v in enumerate(top_features['importance']):
     ax.text(
-        x=v + x_max * 0.01,  # pequeno offset à direita
+        x=v + x_max * 0.01, 
         y=i,
         s=f"{v:.3f}",
         va='center',
@@ -545,6 +674,80 @@ ax.spines['bottom'].set_visible(True)
 
 ax.set_xlabel('Importância')
 ax.set_ylabel('Features')
+
+plt.tight_layout()
+plt.show()
+#%%
+# =========================================================
+# 18. MATRIZ DE CONFUSÃO
+# =========================================================
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import numpy as np
+
+cm = confusion_matrix(y_test_c, y_pred_sel)
+classes = np.unique(y_test_c)
+
+fig, ax = plt.subplots(figsize=(8, 6))
+
+im = ax.imshow(cm, cmap='Blues')
+
+ax.set_xticks(np.arange(len(classes)))
+ax.set_yticks(np.arange(len(classes)))
+ax.set_xticklabels(classes)
+ax.set_yticklabels(classes)
+
+ax.set_xlabel('Previsto')
+ax.set_ylabel('Real')
+
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+
+cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+cbar.outline.set_visible(False)
+
+for i in range(len(classes)):
+    for j in range(len(classes)):
+        valor = cm[i, j]
+
+        ax.text(
+            j, i, valor,
+            ha='center', va='center',
+            fontsize=10,
+            color='black' if valor < cm.max() * 0.6 else 'white'
+        )
+
+plt.tight_layout()
+plt.show()
+#%%
+# =========================================================
+# 19. CURVA ROC
+# =========================================================
+from sklearn.metrics import roc_curve, auc
+from sklearn.preprocessing import label_binarize
+
+y_score = best_model.predict_proba(X_test_sel)
+
+classes = np.unique(y_test_c)
+y_test_bin = label_binarize(y_test_c, classes=classes)
+
+fig, ax = plt.subplots(figsize=(8, 6))
+
+for i in range(len(classes)):
+    fpr, tpr, _ = roc_curve(y_test_bin[:, i], y_score[:, i])
+    roc_auc = auc(fpr, tpr)
+
+    ax.plot(fpr, tpr, label=f'Classe {classes[i]} (AUC = {roc_auc:.2f})')
+
+ax.plot([0, 1], [0, 1], linestyle='--')
+
+ax.set_xlabel('Taxa de Falso Positivo (FPR)')
+ax.set_ylabel('Taxa de Verdadeiro Positivo (TPR)')
+
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+
+ax.legend(loc='lower right')
 
 plt.tight_layout()
 plt.show()
